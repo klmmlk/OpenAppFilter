@@ -267,3 +267,17 @@ input:checked + .slider:before {
 .row-inline { display: flex; gap: 10px; }
 .row-inline .form-row { flex: 1; }
 .status-tip { margin-top: 8px; font-size: 13px; color: #6b7280; }
+
+/* argon theme sets appearance:none on all checkboxes but defines no :checked
+   visual, so checked boxes look identical to unchecked ones; restore native
+   rendering (this stylesheet is only loaded by oaf pages) */
+input[type=checkbox] {
+    -webkit-appearance: checkbox !important;
+    appearance: auto !important;
+    accent-color: #2885e8;
+    width: 15px !important;
+    height: 15px !important;
+    margin: 0 !important;
+    vertical-align: middle;
+    cursor: pointer;
+}

@@ -1881,19 +1881,29 @@ void update_client_hostname(void)
     {
         if (strlen(line_buf) <= 16)
             continue;
-        sscanf(line_buf, "%*s %s %s %s", mac_buf, ip_buf, hostname_buf);
+        /* reset per line: on a short/malformed lease line sscanf keeps the
+         * previous values and the hostname would leak to the wrong device */
+        mac_buf[0] = '\0';
+        ip_buf[0] = '\0';
+        hostname_buf[0] = '\0';
+        if (sscanf(line_buf, "%*s %31s %31s %127s", mac_buf, ip_buf, hostname_buf) < 2)
+            continue;
         client_node_t *node = find_client_node(mac_buf);
         if (!node)
         {
             node = add_client_node(mac_buf);
-            strncpy(node->ip, ip_buf, sizeof(node->ip));
+            if (!node)
+                continue;
+            strncpy(node->ip, ip_buf, sizeof(node->ip) - 1);
+            node->ip[sizeof(node->ip) - 1] = '\0';
             node->online = 0;
             node->offline_time = get_timestamp();
         }
 
         if (strlen(hostname_buf) > 0 && hostname_buf[0] != '*')
         {
-            strncpy(node->hostname, hostname_buf, sizeof(node->hostname));
+            strncpy(node->hostname, hostname_buf, sizeof(node->hostname) - 1);
+            node->hostname[sizeof(node->hostname) - 1] = '\0';
         }
     }
     fclose(fp);
