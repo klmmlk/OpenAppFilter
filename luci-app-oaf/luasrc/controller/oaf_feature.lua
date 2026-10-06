@@ -14,6 +14,8 @@ function index()
 	entry({"admin", "services", "oaf", "feature", "custom_list"}, call("get_custom_feature_list"), nil).leaf = true
 	entry({"admin", "services", "oaf", "feature", "custom_class_list"}, call("get_custom_feature_class_list"), nil).leaf = true
 	entry({"admin", "services", "oaf", "feature", "custom_save"}, call("set_custom_feature_list"), nil).leaf = true
+	entry({"admin", "services", "oaf", "feature", "dev_conn_list"}, call("get_dev_conn_list"), nil).leaf = true
+	entry({"admin", "services", "oaf", "feature", "conn_users"}, call("get_conn_users"), nil).leaf = true
 end
 
 function get_feature_info()
@@ -101,6 +103,18 @@ function set_custom_feature_list()
 		return
 	end
 	write_fwx_response("set_custom_feature", data_obj)
+end
+
+function get_dev_conn_list()
+	local http = require "luci.http"
+	write_fwx_response("get_dev_conn_list", {
+		ip = http.formvalue("ip") or "",
+		include_lan = tonumber(http.formvalue("include_lan") or "0") or 0
+	})
+end
+
+function get_conn_users()
+	write_fwx_response("get_all_users", {flag = 3})
 end
 
 function get_feature_class_list()

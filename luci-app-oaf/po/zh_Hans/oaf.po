@@ -1959,3 +1959,57 @@ msgstr "无效的Key，请通过官网获取正确的Key，并开通高级版特
 
 msgid "No data"
 msgstr "暂无数据"
+
+msgid "Include LAN destinations"
+msgstr "包含内网目标"
+
+msgid "Selected connections"
+msgstr "已选连接"
+
+msgid "Batch Learn as Features"
+msgstr "批量学为特征"
+
+msgid "Destination Address"
+msgstr "目标地址"
+
+msgid "Host/SNI"
+msgstr "Host/SNI"
+
+msgid "State"
+msgstr "状态"
+
+msgid "Blocked"
+msgstr "已拦截"
+
+msgid "Allowed"
+msgstr "放行"
+
+msgid "Learn as Feature"
+msgstr "学为特征"
+
+msgid "New Application"
+msgstr "新建应用"
+
+msgid "Add to Existing Application"
+msgstr "加入已有应用"
+
+msgid "Features to add"
+msgstr "将添加的特征"
+
+msgid "Any port"
+msgstr "任意端口"
+
+msgid "The application has reached the maximum of 16 features"
+msgstr "该应用特征已达上限（16条）"
+
+msgid "Learned successfully"
+msgstr "学习成功"
+
+msgid "No active connections for this device"
+msgstr "该设备暂无活跃连接"
+
+msgid "Connection table is unavailable on this kernel"
+msgstr "当前内核不支持连接表查看"
+
+msgid "Real-time connections of the selected device. Use Learn as Feature to turn a connection into a custom application feature."
+msgstr "实时查看所选设备的网络连接，可将连接一键学为自定义应用特征。"

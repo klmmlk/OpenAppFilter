@@ -8570,6 +8570,213 @@ struct json_object *fwx_api_get_init_status(struct json_object *req_obj);
 struct json_object *fwx_api_set_init_status(struct json_object *req_obj);
 struct json_object *fwx_api_set_dashboard_param(struct json_object *req_obj);
 struct json_object *fwx_api_get_system_base_info(struct json_object *req_obj);
+struct json_object *fwx_api_get_dev_conn_list(struct json_object *req_obj);
+
+#define FWX_CONN_LIST_MAX 200
+#define FWX_HOST_ROWS_MAX 64
+
+typedef struct fwx_host_row
+{
+	char host[64];
+	char dst_ip[64];
+	unsigned int dst_port;
+	unsigned int proto_num;
+} fwx_host_row_t;
+
+static unsigned int fwx_conn_proto_num(const char *proto)
+{
+	if (!strcasecmp(proto, "TCP"))
+		return 6;
+	if (!strcasecmp(proto, "UDP"))
+		return 17;
+	return 0;
+}
+
+static const char *fwx_conn_proto_str(unsigned int proto)
+{
+	if (proto == 6)
+		return "TCP";
+	if (proto == 17)
+		return "UDP";
+	return "OTHER";
+}
+
+static int fwx_conn_is_public_dst(const char *dst_ip)
+{
+	unsigned int b[4] = {0};
+	if (sscanf(dst_ip, "%u.%u.%u.%u", &b[0], &b[1], &b[2], &b[3]) != 4)
+		return 0;
+	if (b[0] == 0 || b[0] == 10 || b[0] == 127 || b[0] >= 224)
+		return 0;
+	if (b[0] == 172 && b[1] >= 16 && b[1] <= 31)
+		return 0;
+	if (b[0] == 192 && b[1] == 168)
+		return 0;
+	if (b[0] == 169 && b[1] == 254)
+		return 0;
+	return 1;
+}
+
+static int fwx_load_active_host_rows(fwx_host_row_t *rows, int max_rows)
+{
+	FILE *fp = fopen("/proc/net/af_active_host", "r");
+	char line[1024] = {0};
+	int line_count = 0;
+	int count = 0;
+	time_t now = time(NULL);
+
+	if (!fp)
+		return 0;
+	while (fgets(line, sizeof(line), fp) && count < max_rows)
+	{
+		char host_buf[64] = {0};
+		char mac[32] = {0};
+		char src_ip[64] = {0};
+		unsigned int src_port;
+		char dst_ip[64] = {0};
+		unsigned int dst_port;
+		char proto[8] = {0};
+		unsigned int app_proto;
+		unsigned int drop;
+		unsigned int last_update;
+
+		line_count++;
+		if (line_count == 1)
+			continue;
+		str_trim(line);
+		if (!strlen(line))
+			continue;
+		if (sscanf(line, "%63s %31s %63s %u %63s %u %7s %u %u %u",
+				   host_buf, mac, src_ip, &src_port, dst_ip, &dst_port,
+				   proto, &app_proto, &drop, &last_update) < 10)
+			continue;
+		if (now > last_update && (now - last_update) > 180)
+			continue;
+		str_trim(host_buf);
+		if (is_invalid_active_host_value(host_buf))
+			continue;
+		strncpy(rows[count].host, host_buf, sizeof(rows[count].host) - 1);
+		strncpy(rows[count].dst_ip, dst_ip, sizeof(rows[count].dst_ip) - 1);
+		rows[count].dst_port = dst_port;
+		rows[count].proto_num = fwx_conn_proto_num(proto);
+		count++;
+	}
+	fclose(fp);
+	return count;
+}
+
+static const char *fwx_conn_lookup_host(fwx_host_row_t *rows, int rows_count,
+										const char *dst_ip, unsigned int dst_port,
+										unsigned int proto_num)
+{
+	int i;
+	for (i = 0; i < rows_count; i++)
+	{
+		if (rows[i].proto_num == proto_num &&
+			rows[i].dst_port == dst_port &&
+			!strcmp(rows[i].dst_ip, dst_ip))
+			return rows[i].host;
+	}
+	return NULL;
+}
+
+struct json_object *fwx_api_get_dev_conn_list(struct json_object *req_obj)
+{
+	struct json_object *data = NULL;
+	struct json_object *conn_list = NULL;
+	struct json_object *ip_obj = NULL;
+	struct json_object *include_lan_obj = NULL;
+	fwx_host_row_t host_rows[FWX_HOST_ROWS_MAX];
+	char req_ip[64] = {0};
+	int include_lan = 0;
+	int host_rows_count = 0;
+	int total = 0;
+	int available = 1;
+	FILE *fp = NULL;
+	char line[512] = {0};
+
+	if (req_obj)
+	{
+		ip_obj = json_object_object_get(req_obj, "ip");
+		include_lan_obj = json_object_object_get(req_obj, "include_lan");
+	}
+	if (ip_obj)
+		strncpy(req_ip, json_object_get_string(ip_obj), sizeof(req_ip) - 1);
+	if (include_lan_obj)
+		include_lan = json_object_get_int(include_lan_obj);
+	str_trim(req_ip);
+	if (!req_ip[0])
+		return fwx_gen_api_response_data(API_CODE_ERROR, NULL);
+
+	data = json_object_new_object();
+	conn_list = json_object_new_array();
+
+	fp = fopen("/proc/net/af_conn", "r");
+	if (!fp)
+	{
+		available = 0;
+		goto out;
+	}
+
+	host_rows_count = fwx_load_active_host_rows(host_rows, FWX_HOST_ROWS_MAX);
+
+	while (fgets(line, sizeof(line), fp))
+	{
+		int id;
+		char src_ip[64] = {0};
+		char dst_ip[64] = {0};
+		unsigned int src_port;
+		unsigned int dst_port;
+		unsigned int proto_num;
+		unsigned int app_id;
+		unsigned int drop;
+		unsigned int inactive;
+		unsigned int total_pkts;
+		struct json_object *item = NULL;
+		const char *host = NULL;
+		char app_name[64] = {0};
+		char *name_ptr = NULL;
+
+		if (sscanf(line, "%d %63s %63s %u %u %u %u %u %u %u",
+				   &id, src_ip, dst_ip, &src_port, &dst_port, &proto_num,
+				   &app_id, &drop, &inactive, &total_pkts) < 10)
+			continue;
+		if (strcmp(src_ip, req_ip) != 0)
+			continue;
+		if (!include_lan && !fwx_conn_is_public_dst(dst_ip))
+			continue;
+
+		item = json_object_new_object();
+		json_object_object_add(item, "proto", json_object_new_string(fwx_conn_proto_str(proto_num)));
+		json_object_object_add(item, "dst_ip", json_object_new_string(dst_ip));
+		json_object_object_add(item, "dst_port", json_object_new_int((int)dst_port));
+		json_object_object_add(item, "app_id", json_object_new_int((int)app_id));
+		json_object_object_add(item, "drop", json_object_new_int((int)(drop ? 1 : 0)));
+		json_object_object_add(item, "pkts", json_object_new_int((int)total_pkts));
+
+		name_ptr = get_app_name_by_id((int)app_id);
+		if (name_ptr && name_ptr[0])
+			snprintf(app_name, sizeof(app_name), "%s", name_ptr);
+		json_object_object_add(item, "app_name", json_object_new_string(app_name));
+
+		host = fwx_conn_lookup_host(host_rows, host_rows_count, dst_ip, dst_port, proto_num);
+		json_object_object_add(item, "host", json_object_new_string(host ? host : ""));
+
+		json_object_array_add(conn_list, item);
+		total++;
+		if (total >= FWX_CONN_LIST_MAX)
+			break;
+	}
+	fclose(fp);
+	fp = NULL;
+
+out:
+	json_object_object_add(data, "available", json_object_new_int(available));
+	json_object_object_add(data, "total", json_object_new_int(total));
+	json_object_object_add(data, "conn_list", conn_list);
+	json_object_object_add(data, "ip", json_object_new_string(req_ip));
+	return fwx_gen_api_response_data(API_CODE_SUCCESS, data);
+}
 
 
 
@@ -8577,6 +8784,7 @@ static fwx_api_node_t fwx_api_node_list[] = {
     {"get_custom_feature", fwx_api_get_custom_feature, 0, FWX_API_METHOD_GET},
     {"get_custom_feature_class_list", fwx_api_get_custom_feature_class_list, 0, FWX_API_METHOD_GET},
     {"set_custom_feature", fwx_api_set_custom_feature, 0, FWX_API_METHOD_POST},
+    {"get_dev_conn_list", fwx_api_get_dev_conn_list, 0, FWX_API_METHOD_GET},
     {"get_feature_info", fwx_api_get_feature_info, 0, FWX_API_METHOD_GET},
     {"get_feature_online_config", fwx_api_get_feature_online_config, 0, FWX_API_METHOD_GET},
     {"set_feature_online_config", fwx_api_set_feature_online_config, 0, FWX_API_METHOD_POST},

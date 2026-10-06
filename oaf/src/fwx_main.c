@@ -2410,6 +2410,25 @@ u_int32_t fwx_hook_gateway_handle(struct sk_buff *skb, struct net_device *dev)
 	is_record_whitelist = client->record_whitelist;
 	AF_CLIENT_UNLOCK_R();
 
+	/* gateway mode also feeds the live connection table (bypass mode does already) */
+	if (flow.src && flow.dst)
+	{
+		af_conn_t *conn;
+		u_int32_t conn_app_id = fwx_ct_get_appid(ct);
+
+		spin_lock(&af_conn_lock);
+		conn = af_conn_find_and_add(flow.src, flow.dst, flow.sport, flow.dport, flow.l4_protocol);
+		if (conn)
+		{
+			conn->last_jiffies = jiffies;
+			conn->total_pkts++;
+			if (fwx_ct_is_valid_appid(conn_app_id))
+				conn->app_id = conn_app_id;
+			conn->drop = fwx_ct_test_bit(ct, FWX_CT_DROP_BIT) ? 1 : 0;
+		}
+		spin_unlock(&af_conn_lock);
+	}
+
 	app_id = fwx_ct_get_appid(ct);
 	if (app_id != 0 && fwx_ct_is_valid_appid(app_id))
 	{
