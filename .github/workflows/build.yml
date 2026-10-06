@@ -5,6 +5,9 @@ on:
   push:
     branches: [master]
 
+permissions:
+  contents: write
+
 jobs:
   build:
     name: ${{ matrix.version }} / ${{ matrix.arch }}
@@ -54,12 +57,13 @@ jobs:
           echo "CONFIG_PACKAGE_appfilter=y" >> .config
           echo "CONFIG_PACKAGE_luci-app-oaf=y" >> .config
           make defconfig
+          grep -E "CONFIG_PACKAGE_(appfilter|luci-app-oaf)[= ]" .config
 
       - name: Build
         run: |
           cd sdk
-          make -j"$(nproc)" package/appfilter/compile package/luci-app-oaf/compile || \
-            make -j1 package/appfilter/compile package/luci-app-oaf/compile V=s
+          make -j"$(nproc)" package/open-app-filter/compile package/luci-app-oaf/compile || \
+            make -j1 package/open-app-filter/compile package/luci-app-oaf/compile V=s
 
       - name: Collect ipk files
         run: |
@@ -72,3 +76,12 @@ jobs:
         with:
           name: immortalwrt-${{ matrix.version }}-${{ matrix.arch }}
           path: out/*.ipk
+
+      - name: Publish to rolling release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: container-latest
+          name: "ImmortalWrt container packages (rolling)"
+          prerelease: true
+          files: out/*.ipk
+          overwrite_files: true
