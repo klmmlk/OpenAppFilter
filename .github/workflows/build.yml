@@ -68,8 +68,16 @@ jobs:
       - name: Collect ipk files
         run: |
           mkdir -p out
-          find sdk/bin/packages -name '*.ipk' -exec cp -v {} out/ \;
+          find sdk/bin/packages \( -name 'appfilter_*.ipk' \
+            -o -name 'luci-app-oaf_*.ipk' -o -name 'luci-i18n-oaf*.ipk' \) \
+            -exec cp -v {} out/ \;
           ls -la out
+
+      - name: Remove previous rolling release
+        run: |
+          gh release delete container-latest --cleanup-tag -y -R "$GITHUB_REPOSITORY" || true
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -84,4 +92,3 @@ jobs:
           name: "ImmortalWrt container packages (rolling)"
           prerelease: true
           files: out/*.ipk
-          overwrite_files: true
