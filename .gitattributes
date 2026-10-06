@@ -1,0 +1,4 @@
+# normalize all text files to LF in the repository (CI builds on Linux);
+# git auto-detects binaries, but mark known ones explicitly
+* text=auto
+*.bin binary

@@ -28,6 +28,7 @@
 
 #include "fwx_client.h"
 #include "fwx_client_fs.h"
+#include "fwx_netns.h"
 #include "fwx_log.h"
 #include "fwx_mac.h"
 #include "fwx_mac_filter.h"
@@ -877,19 +878,27 @@ static void client_timer_handler(unsigned long data)
 
 
 
+int af_client_hooks_register_net(struct net *net)
+{
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 3, 0)
+	return nf_register_net_hooks(net, af_client_ops, ARRAY_SIZE(af_client_ops));
+#else
+	return nf_register_hooks(af_client_ops, ARRAY_SIZE(af_client_ops));
+#endif
+}
+
+void af_client_hooks_unregister_net(struct net *net)
+{
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 3, 0)
+	nf_unregister_net_hooks(net, af_client_ops, ARRAY_SIZE(af_client_ops));
+#else
+	nf_unregister_hooks(af_client_ops, ARRAY_SIZE(af_client_ops));
+#endif
+}
+
 int af_client_init(void)
 {
-	int err;
 	nf_client_list_init();
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 3, 0)
-	err = nf_register_net_hooks(&init_net, af_client_ops, ARRAY_SIZE(af_client_ops));
-#else
-	err = nf_register_hooks(af_client_ops, ARRAY_SIZE(af_client_ops));
-#endif
-	if (err) {
-		AF_ERROR("register client hooks failed!\n");
-	}
-
 	return 0;
 }
 
@@ -967,11 +976,6 @@ int fwx_api_flush_record_whitelist(cJSON *data_obj)
 
 void af_client_exit(void)
 {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 3, 0)
-	nf_unregister_net_hooks(&init_net, af_client_ops, ARRAY_SIZE(af_client_ops));
-#else
-	nf_unregister_hooks(af_client_ops, ARRAY_SIZE(af_client_ops));
-#endif
 	nf_client_list_clear();
 	return;
 }

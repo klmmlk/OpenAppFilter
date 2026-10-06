@@ -21,6 +21,7 @@
 #include <linux/etherdevice.h>
 #include <linux/cdev.h>
 #include "fwx_conntrack.h"
+#include "fwx_netns.h"
 #include "fwx_log.h"
 #include "fwx.h"
 
@@ -269,10 +270,9 @@ static const struct proc_ops af_conn_fops = {
 
 #define AF_CONN_PROC_STR "af_conn"
 
-int af_conn_init_procfs(void)
+int af_conn_procfs_init_net(struct net *net)
 {
     struct proc_dir_entry *pde;
-    struct net *net = &init_net;
     pde = proc_create(AF_CONN_PROC_STR, 0644, net->proc_net, &af_conn_fops);
     if (!pde)
     {
@@ -283,9 +283,8 @@ int af_conn_init_procfs(void)
     return 0;
 }
 
-void af_conn_remove_procfs(void)
+void af_conn_procfs_fini_net(struct net *net)
 {
-    struct net *net = &init_net;
     remove_proc_entry(AF_CONN_PROC_STR, net->proc_net);
 }
 
@@ -297,11 +296,9 @@ int af_conn_init(void)
 	{
 		INIT_HLIST_HEAD(&af_conn_table[i]);
 	}
-    af_conn_init_procfs(); 
     return 0;
 }
 
 void af_conn_exit(void){
-    af_conn_remove_procfs();
     af_conn_cleanup();
 }

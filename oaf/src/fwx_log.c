@@ -175,11 +175,8 @@ static struct ctl_table fwx_table[] = {
 		.mode		= 0666,
 		.proc_handler	= proc_dointvec,
 	},
-		
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(6, 12, 0))
 	{
 	}
-#endif
 };
 #define FWX_SYS_PROC_DIR "fwx"
 

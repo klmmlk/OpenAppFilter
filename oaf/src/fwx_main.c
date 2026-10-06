@@ -41,6 +41,7 @@
 #include "fwx_config.h"
 #include "fwx_mac_filter.h"
 #include "fwx_app_filter.h"
+#include "fwx_netns.h"
 
 
 MODULE_LICENSE("GPL");
@@ -2151,8 +2152,9 @@ static int af_should_send_tcp_rst(struct sk_buff *skb, flow_info_t *flow)
 
 static void af_send_tcp_reset(struct sk_buff *skb)
 {
+	/* send the RST from the netns the packet belongs to (host or container) */
 #if LINUX_VERSION_CODE > KERNEL_VERSION(5,10,197)
-	nf_send_reset(&init_net, skb->sk, skb, NF_INET_PRE_ROUTING);
+	nf_send_reset(dev_net(skb->dev), skb->sk, skb, NF_INET_PRE_ROUTING);
 #elif LINUX_VERSION_CODE > KERNEL_VERSION(4,4,1)
 
 
@@ -2698,8 +2700,6 @@ static void fini_fwx_timer(void)
 	AF_INFO("del fwx timer...ok");
 }
 
-	static struct sock *fwx_sock = NULL;
-
 #define FWX_EXTRA_MSG_BUF_LEN 128
 int af_send_msg_to_user(char *pbuf, uint16_t len)
 {
@@ -2710,12 +2710,22 @@ int af_send_msg_to_user(char *pbuf, uint16_t len)
 	struct af_msg_hdr *hdr = NULL;
 	char *p_data = NULL;
 	int ret;
-	if (len >= MAX_FWX_NL_MSG_LEN)
-		return -1;
+	struct sock *fwx_sock = fwx_daemon_sock_get();
+	if (len >= MAX_FWX_NL_MSG_LEN) {
+		ret = -1;
+		goto out;
+	}
+	if (!fwx_sock) {
+		/* daemon not seen yet in any netns */
+		ret = -1;
+		goto out;
+	}
 
 	msg_buf = kmalloc(buf_len, GFP_ATOMIC);
-	if (!msg_buf)
-		return -1;
+	if (!msg_buf) {
+		ret = -1;
+		goto out;
+	}
 
 	memset(msg_buf, 0x0, buf_len);
 	nl_skb = nlmsg_new(len + sizeof(struct af_msg_hdr), GFP_ATOMIC);
@@ -2743,10 +2753,13 @@ int af_send_msg_to_user(char *pbuf, uint16_t len)
 
 fail:
 	kfree(msg_buf);
+out:
+	if (fwx_sock)
+		sock_put(fwx_sock);
 	return ret;
 }
 
-static void fwx_user_msg_handle(char *data, int len)
+static void fwx_user_msg_handle(char *data, int len, struct net *net)
 {
 	char *msg_data = data + sizeof(af_msg_t);
 	if (len < sizeof(af_msg_t))
@@ -2757,6 +2770,8 @@ static void fwx_user_msg_handle(char *data, int len)
 	case FWX_NL_MSG_INIT:
 		af_client_list_reset_report_num();
 		report_flag = 1;
+		/* remember the netns the daemon lives in (host init_net on OpenWrt) */
+		fwx_daemon_net_set(net);
 		break;
 	case FWX_NL_MSG_ADD_FEATURE:
 		af_add_feature_msg_handle(msg_data, len - sizeof(af_msg_t));
@@ -2791,53 +2806,62 @@ static void fwx_netlink_msg_rcv(struct sk_buff *skb)
 		udata = umsg + sizeof(struct af_msg_hdr);
 
 		if (udata)
-			fwx_user_msg_handle(udata, af_hdr->len);
+			fwx_user_msg_handle(udata, af_hdr->len, sock_net(NETLINK_CB(skb).sk));
 	}
 }
 
-static int netlink_fwx_init(void)
+struct sock *fwx_netlink_create_sock(struct net *net)
 {
 	struct netlink_kernel_cfg nl_cfg = {0};
 	nl_cfg.input = fwx_netlink_msg_rcv;
-	fwx_sock = netlink_kernel_create(&init_net, FWX_NETLINK_ID, &nl_cfg);
-
-	if (NULL == fwx_sock)
-	{
-		AF_ERROR("init fwx netlink failed, id=%d\n", FWX_NETLINK_ID);
-		return -1;
-	}
-	AF_INFO("init fwx netlink ok, id = %d\n", FWX_NETLINK_ID);
-	return 0;
+	return netlink_kernel_create(net, FWX_NETLINK_ID, &nl_cfg);
 }
 
 
-int af_active_app_init_procfs(void);
-void af_active_app_clean_procfs(void);
-int af_active_host_init_procfs(void);
-void af_active_host_clean_procfs(void);
+int fwx_hooks_register_net(struct net *net)
+{
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 3, 0)
+	return nf_register_net_hooks(net, fwx_ops, ARRAY_SIZE(fwx_ops));
+#else
+	return nf_register_hooks(fwx_ops, ARRAY_SIZE(fwx_ops));
+#endif
+}
+
+void fwx_hooks_unregister_net(struct net *net)
+{
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 3, 0)
+	nf_unregister_net_hooks(net, fwx_ops, ARRAY_SIZE(fwx_ops));
+#else
+	nf_unregister_hooks(fwx_ops, ARRAY_SIZE(fwx_ops));
+#endif
+}
 
 static int __init fwx_init(void)
 {
 	int err;
+
 	af_conn_init();
-	netlink_fwx_init();
 	af_log_init();
-	init_af_client_procfs();
+	/*
+	 * init client list tables BEFORE hooks go live (pernet install makes
+	 * hooks fire on every netns immediately)
+	 */
 	af_client_init();
-	af_active_app_init_procfs();
-	af_active_host_init_procfs();
+	/*
+	 * pernet subsys installs hooks, netlink socket and procfs files in
+	 * every netns (init_net on OpenWrt; init_net + container netns on PVE)
+	 */
+	err = fwx_netns_init();
+	if (err) {
+		AF_ERROR("fwx pernet init failed, err = %d\n", err);
+		af_client_exit();
+		af_log_exit();
+		af_conn_exit();
+		return err;
+	}
 	fwx_register_dev();
 	fwx_mac_filter_init();
 	fwx_app_filter_init();
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 3, 0)
-	err = nf_register_net_hooks(&init_net, fwx_ops, ARRAY_SIZE(fwx_ops));
-#else
-	err = nf_register_hooks(fwx_ops, ARRAY_SIZE(fwx_ops));
-#endif
-	if (err)
-	{
-		AF_ERROR("fwx register filter hooks failed!\n");
-	}
 	init_fwx_timer();
 	AF_INFO("fwx: Driver ver. %s - Copyright(c) 2026, fanchmwrt, <www.fanchmwrt.com>\n", FWX_VERSION);
 	AF_INFO("fwx: init ok\n");
@@ -2848,24 +2872,18 @@ static void fwx_fini(void)
 {
 	AF_INFO("fwx module exit\n");
 	fini_fwx_timer();
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 3, 0)
-	nf_unregister_net_hooks(&init_net, fwx_ops, ARRAY_SIZE(fwx_ops));
-#else
-	nf_unregister_hooks(fwx_ops, ARRAY_SIZE(fwx_ops));
-#endif
-	finit_af_client_procfs();
-	af_active_app_clean_procfs();
-	af_active_host_clean_procfs();
-	af_clean_feature_list();
-	af_clear_active_app_list();
-	af_clear_active_host_list();
-	af_log_exit();
+	/* removes per-net hooks, netlink sockets and procfs files */
+	fwx_netns_exit();
+	/* per-client proc dirs live on init_net only, clean them up here */
+	af_client_proc_dirs_cleanup();
 	af_client_exit();
 	fwx_app_filter_exit();
 	fwx_mac_filter_exit();
 	fwx_unregister_dev();
-	if (fwx_sock)
-		netlink_kernel_release(fwx_sock);
+	af_clean_feature_list();
+	af_clear_active_app_list();
+	af_clear_active_host_list();
+	af_log_exit();
 	af_conn_exit();
 	return;
 }
@@ -3338,11 +3356,10 @@ static const struct proc_ops af_active_app_fops = {
 #define AF_ACTIVE_APP_PROC_STR "af_active_app"
 
 
-int af_active_app_init_procfs(void)
+int af_active_app_procfs_init_net(struct net *net)
 {
 	struct proc_dir_entry *pde;
-	struct net *net = &init_net;
-	
+
 	pde = proc_create(AF_ACTIVE_APP_PROC_STR, 0444, net->proc_net, &af_active_app_fops);
 	if (!pde) {
 		AF_ERROR("af_active_app proc file created error\n");
@@ -3352,9 +3369,8 @@ int af_active_app_init_procfs(void)
 }
 
 
-void af_active_app_clean_procfs(void)
+void af_active_app_procfs_fini_net(struct net *net)
 {
-	struct net *net = &init_net;
 	remove_proc_entry(AF_ACTIVE_APP_PROC_STR, net->proc_net);
 }
 
@@ -3477,11 +3493,10 @@ static const struct proc_ops af_active_host_fops = {
 #define AF_ACTIVE_HOST_PROC_STR "af_active_host"
 
 
-int af_active_host_init_procfs(void)
+int af_active_host_procfs_init_net(struct net *net)
 {
 	struct proc_dir_entry *pde;
-	struct net *net = &init_net;
-	
+
 	pde = proc_create(AF_ACTIVE_HOST_PROC_STR, 0444, net->proc_net, &af_active_host_fops);
 	if (!pde) {
 		AF_ERROR("af_active_host proc file created error\n");
@@ -3491,9 +3506,8 @@ int af_active_host_init_procfs(void)
 }
 
 
-void af_active_host_clean_procfs(void)
+void af_active_host_procfs_fini_net(struct net *net)
 {
-	struct net *net = &init_net;
 	remove_proc_entry(AF_ACTIVE_HOST_PROC_STR, net->proc_net);
 }
 

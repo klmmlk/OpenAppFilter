@@ -28,6 +28,7 @@
 #include "k_json.h"
 #include "fwx_log.h"
 #include "fwx_client.h"
+#include "fwx_netns.h"
 extern char *ipv6_to_str(const struct in6_addr *addr, char *str);
 
 extern struct list_head af_client_list_table[MAX_AF_CLIENT_HASH_SIZE];
@@ -537,10 +538,9 @@ static const struct proc_ops af_client_visit_fops = {
 };
 #endif
 
-int init_af_client_procfs(void)
+int af_client_procfs_init_net(struct net *net)
 {
     struct proc_dir_entry *pde;
-    struct net *net = &init_net;
     pde = proc_create(AF_CLIENT_PROC_STR, 0440, net->proc_net, &af_client_fops);
 
     if (!pde)
@@ -555,7 +555,7 @@ int init_af_client_procfs(void)
 	  AF_ERROR("nf_client visiting info proc file created error\n");
 	  return -1;
 	}
-	
+
 	pde = proc_create(AF_CLIENT_VISIT_LIST, 0440, net->proc_net, &af_client_visit_fops);
 	if (!pde)
 	{
@@ -565,14 +565,24 @@ int init_af_client_procfs(void)
     return 0;
 }
 
-void finit_af_client_procfs(void)
+void af_client_procfs_fini_net(struct net *net)
+{
+    remove_proc_entry(AF_CLIENT_PROC_STR, net->proc_net);
+    remove_proc_entry(AF_VISIT_INFO, net->proc_net);
+    remove_proc_entry(AF_CLIENT_VISIT_LIST, net->proc_net);
+}
+
+/*
+ * Per-client dirs are created lazily under init_net's /proc/net/fwx_client
+ * (diagnostic only, not read by the daemon); clean them up at module exit.
+ */
+void af_client_proc_dirs_cleanup(void)
 {
     struct net *net = &init_net;
     int i;
     af_client_info_t *client;
-    
+
     mutex_lock(&af_client_base_dir_mutex);
-    
 
     if (g_af_client_base_dir) {
         AF_CLIENT_LOCK_R();
@@ -584,16 +594,11 @@ void finit_af_client_procfs(void)
             }
         }
         AF_CLIENT_UNLOCK_R();
+
+        remove_proc_entry(AF_CLIENT_BASE_DIR, net->proc_net);
+        g_af_client_base_dir = NULL;  // 重置静态变量
     }
-    
 
-    remove_proc_entry(AF_CLIENT_PROC_STR, net->proc_net);
-    remove_proc_entry(AF_VISIT_INFO, net->proc_net);
-    remove_proc_entry(AF_CLIENT_VISIT_LIST, net->proc_net);
-    
-
-    remove_proc_entry(AF_CLIENT_BASE_DIR, net->proc_net);
-    g_af_client_base_dir = NULL;  // 重置静态变量
     mutex_unlock(&af_client_base_dir_mutex);
 }
 
