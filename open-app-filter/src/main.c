@@ -420,6 +420,15 @@ void init_system_config_to_proc(void) {
             work_mode = 0;
         }
         update_fwx_proc_u32_value("work_mode", work_mode);
+
+        /* the master switch persists in fwx.appfilter.enable (written by the
+         * LuCI toggle); re-apply it to the kernel on every daemon start or it
+         * silently falls back to the module default (off) after a reboot */
+        int appfilter_enable = fwx_uci_get_int_value(ctx, "fwx.appfilter.enable");
+        if (appfilter_enable < 0) {
+            appfilter_enable = 1;
+        }
+        update_fwx_proc_u32_value("appfilter_enable", appfilter_enable);
         uci_free_context(ctx);
     }
 }
