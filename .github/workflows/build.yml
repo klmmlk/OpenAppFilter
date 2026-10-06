@@ -91,4 +91,5 @@ jobs:
           tag_name: container-latest
           name: "ImmortalWrt container packages (rolling)"
           prerelease: true
+          draft: false
           files: out/*.ipk
