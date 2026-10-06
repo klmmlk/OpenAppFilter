@@ -32,6 +32,7 @@ typedef struct {
     u8 ignore;
     af_conn_state_t state;      
     unsigned long last_jiffies;
+    char host[64];
 } af_conn_t;
 
 int af_conn_init(void);
@@ -50,6 +51,8 @@ af_conn_t* af_conn_find_and_add(u32 src_ip, u32 dst_ip,
                        u8 protocol);
 
 void af_conn_update(af_conn_t *conn, u32 app_id, u8 drop);
+
+void af_conn_set_host(af_conn_t *conn, const char *host, int len);
 
 void af_conn_clean_timeout(void);
 

@@ -78,6 +78,7 @@ af_conn_t *af_conn_add(u32 src_ip, u32 dst_ip, u16 src_port, u16 dst_port, u8 pr
     conn->drop = 0;
     conn->state = AF_CONN_NEW;
     conn->last_jiffies = jiffies;
+    conn->host[0] = 0x0;
     hlist_add_head(&conn->node, &af_conn_table[hash]);
     AF_LMT_INFO("add new conn ok...%pI4:%d->%pI4:%d %d\n",
         &conn->src_ip, conn->src_port, &conn->dst_ip, conn->dst_port, conn->protocol);
@@ -121,6 +122,18 @@ void af_conn_update(af_conn_t *conn, u32 app_id, u8 drop)
     conn->app_id = app_id;
     conn->drop = drop;
     conn->last_jiffies = jiffies;
+    spin_unlock(&af_conn_lock);
+}
+
+void af_conn_set_host(af_conn_t *conn, const char *host, int len)
+{
+    if (!conn || !host || len <= 0)
+        return;
+    if (len > 63)
+        len = 63;
+    spin_lock(&af_conn_lock);
+    memcpy(conn->host, host, len);
+    conn->host[len] = 0x0;
     spin_unlock(&af_conn_lock);
 }
 
@@ -206,8 +219,8 @@ static int af_conn_seq_show(struct seq_file *s, void *v)
     if (v == SEQ_START_TOKEN)
     {
         index = 0;
-        seq_printf(s, "%-4s %-20s %-20s %-12s %-12s %-12s %-12s %-12s %-12s %-12s\n", 
-        "Id", "src_ip", "dst_ip", "src_port", "dst_port", "protocol", "app_id", "drop", "inactive", "total_pkts");
+        seq_printf(s, "%-4s %-20s %-20s %-12s %-12s %-12s %-12s %-12s %-12s %-12s %-48s\n",
+        "Id", "src_ip", "dst_ip", "src_port", "dst_port", "protocol", "app_id", "drop", "inactive", "total_pkts", "host");
         return 0;
     }
 
@@ -216,8 +229,9 @@ static int af_conn_seq_show(struct seq_file *s, void *v)
     sprintf(dst_ip_str, "%pI4", &node->dst_ip);
     u_int32_t inactive_time = jiffies - node->last_jiffies;
 
-    seq_printf(s, "%-4d %-20s %-20s %-12d %-12d %-12d %-12d %-12d %-12d %-12d\n", index, src_ip_str, dst_ip_str,
-               node->src_port, node->dst_port, node->protocol, node->app_id, node->drop, inactive_time, node->total_pkts);
+    seq_printf(s, "%-4d %-20s %-20s %-12d %-12d %-12d %-12d %-12d %-12d %-12d %-48s\n", index, src_ip_str, dst_ip_str,
+               node->src_port, node->dst_port, node->protocol, node->app_id, node->drop, inactive_time, node->total_pkts,
+               node->host[0] ? node->host : "-");
     return 0;
 }
 static const struct seq_operations af_conn_seq_ops = {

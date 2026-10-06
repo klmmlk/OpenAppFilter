@@ -217,8 +217,8 @@ typedef struct flow_info{
 }flow_info_t;
 
 
-#define MAX_ACTIVE_APP_LIST_SIZE 10
-#define MAX_ACTIVE_HOST_LIST_SIZE 10
+#define MAX_ACTIVE_APP_LIST_SIZE 256
+#define MAX_ACTIVE_HOST_LIST_SIZE 256
 
 
 typedef struct active_app_node {

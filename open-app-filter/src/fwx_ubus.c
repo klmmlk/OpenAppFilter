@@ -8573,15 +8573,6 @@ struct json_object *fwx_api_get_system_base_info(struct json_object *req_obj);
 struct json_object *fwx_api_get_dev_conn_list(struct json_object *req_obj);
 
 #define FWX_CONN_LIST_MAX 200
-#define FWX_HOST_ROWS_MAX 64
-
-typedef struct fwx_host_row
-{
-	char host[64];
-	char dst_ip[64];
-	unsigned int dst_port;
-	unsigned int proto_num;
-} fwx_host_row_t;
 
 static unsigned int fwx_conn_proto_num(const char *proto)
 {
@@ -8617,83 +8608,18 @@ static int fwx_conn_is_public_dst(const char *dst_ip)
 	return 1;
 }
 
-static int fwx_load_active_host_rows(fwx_host_row_t *rows, int max_rows)
-{
-	FILE *fp = fopen("/proc/net/af_active_host", "r");
-	char line[1024] = {0};
-	int line_count = 0;
-	int count = 0;
-	time_t now = time(NULL);
-
-	if (!fp)
-		return 0;
-	while (fgets(line, sizeof(line), fp) && count < max_rows)
-	{
-		char host_buf[64] = {0};
-		char mac[32] = {0};
-		char src_ip[64] = {0};
-		unsigned int src_port;
-		char dst_ip[64] = {0};
-		unsigned int dst_port;
-		char proto[8] = {0};
-		unsigned int app_proto;
-		unsigned int drop;
-		unsigned int last_update;
-
-		line_count++;
-		if (line_count == 1)
-			continue;
-		str_trim(line);
-		if (!strlen(line))
-			continue;
-		if (sscanf(line, "%63s %31s %63s %u %63s %u %7s %u %u %u",
-				   host_buf, mac, src_ip, &src_port, dst_ip, &dst_port,
-				   proto, &app_proto, &drop, &last_update) < 10)
-			continue;
-		if (now > last_update && (now - last_update) > 180)
-			continue;
-		str_trim(host_buf);
-		if (is_invalid_active_host_value(host_buf))
-			continue;
-		strncpy(rows[count].host, host_buf, sizeof(rows[count].host) - 1);
-		strncpy(rows[count].dst_ip, dst_ip, sizeof(rows[count].dst_ip) - 1);
-		rows[count].dst_port = dst_port;
-		rows[count].proto_num = fwx_conn_proto_num(proto);
-		count++;
-	}
-	fclose(fp);
-	return count;
-}
-
-static const char *fwx_conn_lookup_host(fwx_host_row_t *rows, int rows_count,
-										const char *dst_ip, unsigned int dst_port,
-										unsigned int proto_num)
-{
-	int i;
-	for (i = 0; i < rows_count; i++)
-	{
-		if (rows[i].proto_num == proto_num &&
-			rows[i].dst_port == dst_port &&
-			!strcmp(rows[i].dst_ip, dst_ip))
-			return rows[i].host;
-	}
-	return NULL;
-}
-
 struct json_object *fwx_api_get_dev_conn_list(struct json_object *req_obj)
 {
 	struct json_object *data = NULL;
 	struct json_object *conn_list = NULL;
 	struct json_object *ip_obj = NULL;
 	struct json_object *include_lan_obj = NULL;
-	fwx_host_row_t host_rows[FWX_HOST_ROWS_MAX];
 	char req_ip[64] = {0};
 	int include_lan = 0;
-	int host_rows_count = 0;
 	int total = 0;
 	int available = 1;
 	FILE *fp = NULL;
-	char line[512] = {0};
+	char line[640] = {0};
 
 	if (req_obj)
 	{
@@ -8718,8 +8644,6 @@ struct json_object *fwx_api_get_dev_conn_list(struct json_object *req_obj)
 		goto out;
 	}
 
-	host_rows_count = fwx_load_active_host_rows(host_rows, FWX_HOST_ROWS_MAX);
-
 	while (fgets(line, sizeof(line), fp))
 	{
 		int id;
@@ -8732,14 +8656,14 @@ struct json_object *fwx_api_get_dev_conn_list(struct json_object *req_obj)
 		unsigned int drop;
 		unsigned int inactive;
 		unsigned int total_pkts;
+		char host[64] = {0};
 		struct json_object *item = NULL;
-		const char *host = NULL;
 		char app_name[64] = {0};
 		char *name_ptr = NULL;
 
-		if (sscanf(line, "%d %63s %63s %u %u %u %u %u %u %u",
+		if (sscanf(line, "%d %63s %63s %u %u %u %u %u %u %u %63s",
 				   &id, src_ip, dst_ip, &src_port, &dst_port, &proto_num,
-				   &app_id, &drop, &inactive, &total_pkts) < 10)
+				   &app_id, &drop, &inactive, &total_pkts, host) < 10)
 			continue;
 		if (strcmp(src_ip, req_ip) != 0)
 			continue;
@@ -8759,8 +8683,7 @@ struct json_object *fwx_api_get_dev_conn_list(struct json_object *req_obj)
 			snprintf(app_name, sizeof(app_name), "%s", name_ptr);
 		json_object_object_add(item, "app_name", json_object_new_string(app_name));
 
-		host = fwx_conn_lookup_host(host_rows, host_rows_count, dst_ip, dst_port, proto_num);
-		json_object_object_add(item, "host", json_object_new_string(host ? host : ""));
+		json_object_object_add(item, "host", json_object_new_string(strcmp(host, "-") ? host : ""));
 
 		json_object_array_add(conn_list, item);
 		total++;

@@ -2372,6 +2372,7 @@ u_int32_t fwx_hook_gateway_handle(struct sk_buff *skb, struct net_device *dev)
 	struct nf_conn *ct = NULL;
 	struct nf_conn_acct *acct;
 	af_client_info_t *client = NULL;
+	af_conn_t *af_conn_entry = NULL;
 	u_int32_t ret = NF_ACCEPT;
 	u_int32_t app_id = 0;
 	u_int8_t drop = 0;
@@ -2413,18 +2414,17 @@ u_int32_t fwx_hook_gateway_handle(struct sk_buff *skb, struct net_device *dev)
 	/* gateway mode also feeds the live connection table (bypass mode does already) */
 	if (flow.src && flow.dst)
 	{
-		af_conn_t *conn;
 		u_int32_t conn_app_id = fwx_ct_get_appid(ct);
 
 		spin_lock(&af_conn_lock);
-		conn = af_conn_find_and_add(flow.src, flow.dst, flow.sport, flow.dport, flow.l4_protocol);
-		if (conn)
+		af_conn_entry = af_conn_find_and_add(flow.src, flow.dst, flow.sport, flow.dport, flow.l4_protocol);
+		if (af_conn_entry)
 		{
-			conn->last_jiffies = jiffies;
-			conn->total_pkts++;
+			af_conn_entry->last_jiffies = jiffies;
+			af_conn_entry->total_pkts++;
 			if (fwx_ct_is_valid_appid(conn_app_id))
-				conn->app_id = conn_app_id;
-			conn->drop = fwx_ct_test_bit(ct, FWX_CT_DROP_BIT) ? 1 : 0;
+				af_conn_entry->app_id = conn_app_id;
+			af_conn_entry->drop = fwx_ct_test_bit(ct, FWX_CT_DROP_BIT) ? 1 : 0;
 		}
 		spin_unlock(&af_conn_lock);
 	}
@@ -2504,6 +2504,33 @@ u_int32_t fwx_hook_gateway_handle(struct sk_buff *skb, struct net_device *dev)
 		malloc_data = 1;
 	}
 	dpi_main(&flow);
+
+	/* remember the SNI/Host/DNS domain learned from this packet on the conn entry */
+	if (af_conn_entry)
+	{
+		char conn_host[64] = {0};
+		int conn_host_len = 0;
+
+		if (flow.https.match && flow.https.url_pos && flow.https.url_len > 0)
+		{
+			conn_host_len = flow.https.url_len > 63 ? 63 : flow.https.url_len;
+			memcpy(conn_host, flow.https.url_pos, conn_host_len);
+		}
+		else if (flow.http.match && flow.http.host_pos && flow.http.host_len > 0)
+		{
+			conn_host_len = flow.http.host_len > 63 ? 63 : flow.http.host_len;
+			memcpy(conn_host, flow.http.host_pos, conn_host_len);
+		}
+		else if (flow.dns.match && flow.dns.domain[0][0])
+		{
+			conn_host_len = strlen(flow.dns.domain[0]);
+			if (conn_host_len > 63)
+				conn_host_len = 63;
+			memcpy(conn_host, flow.dns.domain[0], conn_host_len);
+		}
+		if (conn_host_len)
+			af_conn_set_host(af_conn_entry, conn_host, conn_host_len);
+	}
 
 	if (!is_record_whitelist) {
 		update_url_visiting_info(client, &flow);
