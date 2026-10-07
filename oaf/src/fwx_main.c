@@ -2363,6 +2363,24 @@ u_int32_t fwx_hook_bypass_handle(struct sk_buff *skb, struct net_device *dev)
 	return ret;
 }
 
+/* the filter decision (appid/drop) is made after the conn entry has been
+ * refreshed at the top of the hook, and a dropped flow rarely sends another
+ * packet; sync the final ct state back or the live connection table keeps
+ * showing the pre-decision "allow" state forever */
+static void fwx_af_conn_sync_decision(af_conn_t *conn, struct nf_conn *ct)
+{
+	u_int32_t app_id;
+	if (!conn || !ct)
+		return;
+	spin_lock(&af_conn_lock);
+	app_id = fwx_ct_get_appid(ct);
+	if (fwx_ct_is_valid_appid(app_id))
+		conn->app_id = app_id;
+	conn->drop = fwx_ct_test_bit(ct, FWX_CT_DROP_BIT) ? 1 : 0;
+	conn->last_jiffies = jiffies;
+	spin_unlock(&af_conn_lock);
+}
+
 u_int32_t fwx_hook_gateway_handle(struct sk_buff *skb, struct net_device *dev)
 {
 	unsigned long long total_packets = 0;
@@ -2389,6 +2407,8 @@ u_int32_t fwx_hook_gateway_handle(struct sk_buff *skb, struct net_device *dev)
 	ct = nf_ct_get(skb, &ctinfo);
 	if (ct == NULL)
 		return NF_ACCEPT;
+
+	acct = nf_conn_acct_find(ct);
 
 	if (flow.l4_protocol == IPPROTO_TCP && !nf_ct_is_confirmed(ct)){
 		return NF_ACCEPT;
@@ -2422,6 +2442,8 @@ u_int32_t fwx_hook_gateway_handle(struct sk_buff *skb, struct net_device *dev)
 		{
 			af_conn_entry->last_jiffies = jiffies;
 			af_conn_entry->total_pkts++;
+			if (acct)
+				af_conn_entry->bytes = atomic64_read(&acct->counter[IP_CT_DIR_ORIGINAL].bytes) + atomic64_read(&acct->counter[IP_CT_DIR_REPLY].bytes);
 			if (fwx_ct_is_valid_appid(conn_app_id))
 				af_conn_entry->app_id = conn_app_id;
 			af_conn_entry->drop = fwx_ct_test_bit(ct, FWX_CT_DROP_BIT) ? 1 : 0;
@@ -2452,6 +2474,7 @@ u_int32_t fwx_hook_gateway_handle(struct sk_buff *skb, struct net_device *dev)
 			if (check_app_action_changed(ct_action, app_id, client)){
 				ct_action = !ct_action;
 				fwx_ct_set_bit(ct, FWX_CT_DROP_BIT, ct_action);
+				fwx_af_conn_sync_decision(af_conn_entry, ct);
 				AF_LMT_DEBUG("update appid %d action to %s, action = %d-->%d\n",
 					 app_id, ct_action ? "drop" : "accept", orig_action, ct_action);
 			}
@@ -2488,7 +2511,6 @@ u_int32_t fwx_hook_gateway_handle(struct sk_buff *skb, struct net_device *dev)
 	}
 
 
-	acct = nf_conn_acct_find(ct);
 	if (!acct)
 		return NF_ACCEPT;
 	total_packets = (unsigned long long)atomic64_read(&acct->counter[IP_CT_DIR_ORIGINAL].packets) + (unsigned long long)atomic64_read(&acct->counter[IP_CT_DIR_REPLY].packets);
@@ -2604,6 +2626,7 @@ u_int32_t fwx_hook_gateway_handle(struct sk_buff *skb, struct net_device *dev)
 			kfree(flow.l4_data);
 		}
 	}
+	fwx_af_conn_sync_decision(af_conn_entry, ct);
 	return ret;
 }
 

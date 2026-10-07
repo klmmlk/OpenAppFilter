@@ -1975,6 +1975,9 @@ msgstr "目标地址"
 msgid "Host/SNI"
 msgstr "Host/SNI"
 
+msgid "Transfer Speed"
+msgstr "传输速度"
+
 msgid "State"
 msgstr "状态"
 

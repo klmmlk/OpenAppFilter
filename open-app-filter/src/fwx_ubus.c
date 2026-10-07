@@ -8608,6 +8608,62 @@ static int fwx_conn_is_public_dst(const char *dst_ip)
 	return 1;
 }
 
+/* per-connection byte sampling: /proc/net/af_conn reports cumulative bytes,
+ * the speed shown in the UI is the delta between two polls */
+#define FWX_CONN_SAMPLE_MAX 512
+typedef struct {
+	char key[96];
+	unsigned long long last_bytes;
+	double last_time;
+} fwx_conn_sample_t;
+static fwx_conn_sample_t fwx_conn_samples[FWX_CONN_SAMPLE_MAX];
+
+static double fwx_mono_time(void)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (double)ts.tv_sec + (double)ts.tv_nsec / 1000000000.0;
+}
+
+static void fwx_conn_sample_get(const char *key, unsigned long long bytes, double now, unsigned long long *speed)
+{
+	int i;
+	int free_slot = -1;
+	int oldest = 0;
+	fwx_conn_sample_t *s;
+
+	for (i = 0; i < FWX_CONN_SAMPLE_MAX; i++)
+	{
+		s = &fwx_conn_samples[i];
+		if (!s->key[0])
+		{
+			if (free_slot < 0)
+				free_slot = i;
+			continue;
+		}
+		if (strcmp(s->key, key) == 0)
+		{
+			double dt = now - s->last_time;
+			if (dt >= 0.2 && bytes >= s->last_bytes)
+				*speed = (unsigned long long)((double)(bytes - s->last_bytes) / dt);
+			else
+				*speed = 0;
+			s->last_bytes = bytes;
+			s->last_time = now;
+			return;
+		}
+		if (s->last_time < fwx_conn_samples[oldest].last_time)
+			oldest = i;
+	}
+	if (free_slot < 0)
+		free_slot = oldest;
+	s = &fwx_conn_samples[free_slot];
+	snprintf(s->key, sizeof(s->key), "%s", key);
+	s->last_bytes = bytes;
+	s->last_time = now;
+	*speed = 0;
+}
+
 struct json_object *fwx_api_get_dev_conn_list(struct json_object *req_obj)
 {
 	struct json_object *data = NULL;
@@ -8644,9 +8700,12 @@ struct json_object *fwx_api_get_dev_conn_list(struct json_object *req_obj)
 		goto out;
 	}
 
+	double now = fwx_mono_time();
+
 	while (fgets(line, sizeof(line), fp))
 	{
 		int id;
+		int fields;
 		char src_ip[64] = {0};
 		char dst_ip[64] = {0};
 		unsigned int src_port;
@@ -8656,19 +8715,32 @@ struct json_object *fwx_api_get_dev_conn_list(struct json_object *req_obj)
 		unsigned int drop;
 		unsigned int inactive;
 		unsigned int total_pkts;
+		unsigned long long total_bytes = 0;
+		unsigned long long speed = 0;
 		char host[64] = {0};
+		char sample_key[96] = {0};
 		struct json_object *item = NULL;
 		char app_name[64] = {0};
 		char *name_ptr = NULL;
 
-		if (sscanf(line, "%d %63s %63s %u %u %u %u %u %u %u %63s",
+		fields = sscanf(line, "%d %63s %63s %u %u %u %u %u %u %u %llu %63s",
 				   &id, src_ip, dst_ip, &src_port, &dst_port, &proto_num,
-				   &app_id, &drop, &inactive, &total_pkts, host) < 10)
+				   &app_id, &drop, &inactive, &total_pkts, &total_bytes, host);
+		if (fields < 10)
 			continue;
+		if (fields < 12)
+		{
+			/* kernel modules older than the bytes column: no speed info */
+			total_bytes = 0;
+			host[0] = '\0';
+		}
 		if (strcmp(src_ip, req_ip) != 0)
 			continue;
 		if (!include_lan && !fwx_conn_is_public_dst(dst_ip))
 			continue;
+
+		snprintf(sample_key, sizeof(sample_key), "%s|%s|%u|%u|%u", src_ip, dst_ip, src_port, dst_port, proto_num);
+		fwx_conn_sample_get(sample_key, total_bytes, now, &speed);
 
 		item = json_object_new_object();
 		json_object_object_add(item, "proto", json_object_new_string(fwx_conn_proto_str(proto_num)));
@@ -8677,6 +8749,8 @@ struct json_object *fwx_api_get_dev_conn_list(struct json_object *req_obj)
 		json_object_object_add(item, "app_id", json_object_new_int((int)app_id));
 		json_object_object_add(item, "drop", json_object_new_int((int)(drop ? 1 : 0)));
 		json_object_object_add(item, "pkts", json_object_new_int((int)total_pkts));
+		json_object_object_add(item, "bytes", json_object_new_int64((long long)total_bytes));
+		json_object_object_add(item, "speed", json_object_new_int64((long long)speed));
 
 		name_ptr = get_app_name_by_id((int)app_id);
 		if (name_ptr && name_ptr[0])

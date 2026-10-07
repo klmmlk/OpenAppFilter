@@ -73,6 +73,7 @@ af_conn_t *af_conn_add(u32 src_ip, u32 dst_ip, u16 src_port, u16 dst_port, u8 pr
     conn->dst_port = dst_port;
     conn->protocol = protocol;
     conn->total_pkts = 0;
+    conn->bytes = 0;
     conn->app_id = 0;
 	conn->client_hello = 0;
     conn->drop = 0;
@@ -219,8 +220,8 @@ static int af_conn_seq_show(struct seq_file *s, void *v)
     if (v == SEQ_START_TOKEN)
     {
         index = 0;
-        seq_printf(s, "%-4s %-20s %-20s %-12s %-12s %-12s %-12s %-12s %-12s %-12s %-48s\n",
-        "Id", "src_ip", "dst_ip", "src_port", "dst_port", "protocol", "app_id", "drop", "inactive", "total_pkts", "host");
+        seq_printf(s, "%-4s %-20s %-20s %-12s %-12s %-12s %-12s %-12s %-12s %-12s %-16s %-48s\n",
+        "Id", "src_ip", "dst_ip", "src_port", "dst_port", "protocol", "app_id", "drop", "inactive", "total_pkts", "bytes", "host");
         return 0;
     }
 
@@ -229,9 +230,9 @@ static int af_conn_seq_show(struct seq_file *s, void *v)
     sprintf(dst_ip_str, "%pI4", &node->dst_ip);
     u_int32_t inactive_time = jiffies - node->last_jiffies;
 
-    seq_printf(s, "%-4d %-20s %-20s %-12d %-12d %-12d %-12d %-12d %-12d %-12d %-48s\n", index, src_ip_str, dst_ip_str,
+    seq_printf(s, "%-4d %-20s %-20s %-12d %-12d %-12d %-12d %-12d %-12d %-12d %-16llu %-48s\n", index, src_ip_str, dst_ip_str,
                node->src_port, node->dst_port, node->protocol, node->app_id, node->drop, inactive_time, node->total_pkts,
-               node->host[0] ? node->host : "-");
+               node->bytes, node->host[0] ? node->host : "-");
     return 0;
 }
 static const struct seq_operations af_conn_seq_ops = {
